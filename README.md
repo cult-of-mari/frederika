@@ -1,0 +1,2 @@
+# frederika
+Rust telegram bot
