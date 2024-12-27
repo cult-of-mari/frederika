@@ -1,27 +1,27 @@
 use anyhow::Result;
-use figment::Result;
-use serde::Deserialize;
-use std::path::Path; use teloxide::prelude::*;
+use std::path::PathBuf;
+use teloxide::prelude::*;
 
-#[derive(Debug, Deserialize)]
-struct Config {
-    token: String,
-
-}
-
-pub fn load_config(config_path: &Path) -> Result<Config> {
-    Figment::new().merge(Toml::file("config.toml")).extract()
-}
+mod config;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    pretty_env_logger::init();
-    log::info!("Starting throw dice bot...");
+    let config_path = PathBuf::from("./Config.toml");
+    let config = config::load_config(&config_path)?;
 
-    let bot = Bot::from_env();
+    log::info!("Starting throw dice bot...");
+    let bot = Bot::new(config.telegram.token);
 
     teloxide::repl(bot, |bot: Bot, msg: Message| async move {
-        bot.send_dice(msg.chat.id).await?;
+        let me = bot.get_me().await?;
+        let is_mention = msg
+            .mentioned_users()
+            .filter(|user| user.id == me.id)
+            .count()
+            == 1;
+        if is_mention {
+            bot.send_dice(msg.chat.id).await?;
+        }
         Ok(())
     })
     .await;

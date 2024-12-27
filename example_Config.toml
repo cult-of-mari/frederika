@@ -1,1 +1,2 @@
-tg_token = "bla"
+[telegram]
+token = "bla"
