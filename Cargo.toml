@@ -1,0 +1,12 @@
+[package]
+name = "frederika"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.95"
+figment = { version = "0.10.19", features = ["toml", "env"] }
+log = "0.4.22"
+serde = { version = "1.0.216", features = ["derive"] }
+teloxide = { version = "0.13.0", features = ["macros"] }
+tokio = { version = "1.42.0", features = ["rt-multi-thread", "macros"] }
