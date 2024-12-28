@@ -8,9 +8,7 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
 };
-use teloxide::dispatching::dialogue::GetChatId;
-use teloxide::dispatching::UpdateFilterExt;
-use teloxide::prelude::*;
+use teloxide::{dispatching::UpdateFilterExt, prelude::*, types::ParseMode};
 
 mod config;
 mod msg_cache;
@@ -49,8 +47,46 @@ async fn handle_message(
         let is_mention = text.contains(me.username());
         log::debug!("Is mention: {is_mention}");
         if is_mention {
-            bot.send_dice(msg.chat.id).await?;
-            bot.send_message(msg.chat.id, "Nipah ^_^").await?;
+            let mut request = GeminiRequest::default();
+
+            request.system_instruction.parts.push(GeminiSystemPart {
+                text: state.config.gemini.personality.clone(),
+            });
+
+            request
+                .generation_config
+                .get_or_insert_default()
+                .response_mime_type
+                .push_str("application/json");
+
+            let settings = [
+                GeminiSafetySetting::HarmCategoryHarassment,
+                GeminiSafetySetting::HarmCategoryHateSpeech,
+                GeminiSafetySetting::HarmCategorySexuallyExplicit,
+                GeminiSafetySetting::HarmCategoryDangerousContent,
+                GeminiSafetySetting::HarmCategoryCivicIntegrity,
+            ];
+
+            let settings = settings.map(|setting| (setting)(GeminiSafetyThreshold::BlockNone));
+
+            request.safety_settings.extend(settings);
+
+            let parts = vec![GeminiPart::from(text.to_string())];
+            request
+                .contents
+                .push(GeminiMessage::new(GeminiRole::User, parts));
+
+            let content = match state.gemini.generate(request).await {
+                Ok(content) => content,
+                Err(error) => format!("```\n{error}\n```\nreport this issue to the admins"),
+            };
+            if let Err(error) = bot
+                .send_message(msg.chat.id, content)
+                .parse_mode(ParseMode::MarkdownV2)
+                .await
+            {
+                log::error!("failed to send message: {error}");
+            }
         }
         let mut msg_cache = state.msg_cache.lock().unwrap();
         msg_cache.add(msg);

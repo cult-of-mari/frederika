@@ -1,2 +1,9 @@
 [telegram]
-token = "bla"
+token = "Telegram Token"
+cache_size = 5
+
+[gemini]
+token = "Gemini Token"
+personality="""
+Personality Here
+"""
