@@ -1,24 +1,49 @@
 use anyhow::Result;
 use google_gemini;
-use std::path::PathBuf;
-use teloxide::{
-    dispatching::{dialogue::InMemStorage, UpdateFilterExt},
-    prelude::*,
+use google_gemini::{
+    GeminiClient, GeminiMessage, GeminiPart, GeminiRequest, GeminiRole, GeminiSafetySetting,
+    GeminiSafetyThreshold, GeminiSystemPart,
 };
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
+use teloxide::dispatching::dialogue::GetChatId;
+use teloxide::dispatching::UpdateFilterExt;
+use teloxide::prelude::*;
 
 mod config;
 mod msg_cache;
+
+use config::Config;
 use msg_cache::MessageCache;
 
-async fn message_handler(
+struct BotState {
+    config: Config,
+    gemini: GeminiClient,
+    msg_cache: Mutex<MessageCache>,
+}
+
+impl BotState {
+    fn new(config: Config) -> Self {
+        let gemini_token = config.gemini.token.clone();
+        let cache_size = config.telegram.cache_size;
+        Self {
+            config,
+            gemini: GeminiClient::new(gemini_token),
+            msg_cache: Mutex::new(MessageCache::new(cache_size)),
+        }
+    }
+}
+
+async fn handle_message(
     bot: Bot,
-    dialogue: Dialogue<MessageCache, InMemStorage<MessageCache>>,
-    mut msg_cache: MessageCache,
     msg: Message,
+    state: Arc<BotState>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if let Some(text) = msg.text() {
-        log::debug!("{msg_cache:?}");
         log::debug!("Recieved message: {text}");
+        log::debug!("ChatId: {}", msg.chat.id);
         let me = bot.get_me().await?;
         log::debug!("{me:?}");
         let is_mention = text.contains(me.username());
@@ -27,6 +52,7 @@ async fn message_handler(
             bot.send_dice(msg.chat.id).await?;
             bot.send_message(msg.chat.id, "Nipah ^_^").await?;
         }
+        let mut msg_cache = state.msg_cache.lock().unwrap();
         msg_cache.add(msg);
     };
     Ok(())
@@ -39,14 +65,12 @@ async fn main() -> Result<()> {
     let config = config::load_config(&config_path)?;
 
     log::info!("Starting the bot...");
-    let bot = Bot::new(config.telegram.token);
+    let bot = Bot::new(config.telegram.token.clone());
+    let state = Arc::new(BotState::new(config));
 
-    let handler = Update::filter_message()
-        .enter_dialogue::<Message, InMemStorage<MessageCache>, MessageCache>()
-        .branch(dptree::endpoint(message_handler));
-
+    let handler = Update::filter_message().branch(dptree::endpoint(handle_message));
     Dispatcher::builder(bot, handler)
-        .dependencies(dptree::deps![InMemStorage::<MessageCache>::new()])
+        .dependencies(dptree::deps![state])
         .enable_ctrlc_handler()
         .build()
         .dispatch()
