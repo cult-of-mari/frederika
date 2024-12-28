@@ -4,6 +4,7 @@ use google_gemini::{
     GeminiClient, GeminiMessage, GeminiPart, GeminiRequest, GeminiRole, GeminiSafetySetting,
     GeminiSafetyThreshold, GeminiSystemPart,
 };
+use serde::Deserialize;
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -32,6 +33,11 @@ impl BotState {
             msg_cache: Mutex::new(MessageCache::new(cache_size)),
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct Response {
+    response: String,
 }
 
 async fn handle_message(
@@ -76,12 +82,36 @@ async fn handle_message(
                 .contents
                 .push(GeminiMessage::new(GeminiRole::User, parts));
 
-            let content = match state.gemini.generate(request).await {
-                Ok(content) => content,
+            let reply_text = match state.gemini.generate(request).await {
+                Ok(content) => {
+                    log::debug!("Response content: {content}");
+                    match serde_json::from_str::<Response>(&content) {
+                        Ok(content) => content.response,
+                        Err(error) => format!("```\n{error}\n```\nreport this issue to the admins"),
+                    }
+                }
                 Err(error) => format!("```\n{error}\n```\nreport this issue to the admins"),
             };
+            let reply_text = reply_text
+                .replace(".", "\\.") // Escape the '.' character
+                .replace("_", "\\_") // Escape the '_' character
+                .replace("*", "\\*") // Escape the '*' character
+                .replace("[", "\\$$") // Escape the '[' character         .replace("]", "\$$") // Escape the ']' character
+                .replace("(", "\\$") // Escape the '(' character
+                .replace(")", "\\$") // Escape the ')' character
+                .replace("~", "\\~") // Escape the '~' character
+                .replace("`", "\\`") // Escape the '`' character
+                .replace(">", "\\>") // Escape the '>' character
+                .replace("#", "\\#") // Escape the '#' character
+                .replace("+", "\\+") // Escape the '+' character
+                .replace("-", "\\-") // Escape the '-' character
+                .replace("=", "\\=") // Escape the '=' character
+                .replace("|", "\\|") // Escape the '|' character
+                .replace("{", "\\{") // Escape the '{' character
+                .replace("}", "\\}") // Escape the '}' character
+                .replace("!", "\\!"); // Escape the '!' character
             if let Err(error) = bot
-                .send_message(msg.chat.id, content)
+                .send_message(msg.chat.id, reply_text)
                 .parse_mode(ParseMode::MarkdownV2)
                 .await
             {
