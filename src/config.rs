@@ -8,6 +8,7 @@ use std::path::Path;
 #[derive(Debug, Deserialize)]
 pub struct Telegram {
     pub token: String,
+    pub names: Vec<String>,
     pub cache_size: usize,
 }
 

@@ -492,6 +492,7 @@ dependencies = [
 name = "frederika"
 version = "0.1.0"
 dependencies = [
+ "aho-corasick",
  "anyhow",
  "env_logger",
  "figment",

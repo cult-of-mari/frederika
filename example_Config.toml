@@ -1,5 +1,6 @@
 [telegram]
 token = "Telegram Token"
+names = [ "Bot_callout_1", "Bot_callout_2" ]
 cache_size = 5
 
 [gemini]

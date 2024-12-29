@@ -1,3 +1,4 @@
+use aho_corasick::AhoCorasick;
 use anyhow::Result;
 use google_gemini;
 use google_gemini::{
@@ -8,7 +9,11 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
 };
-use teloxide::{dispatching::UpdateFilterExt, prelude::*, types::ParseMode};
+use teloxide::{
+    dispatching::UpdateFilterExt,
+    prelude::*,
+    types::{ParseMode, User},
+};
 
 mod config;
 mod msg_cache;
@@ -20,22 +25,72 @@ struct BotState {
     config: Config,
     gemini: GeminiClient,
     msg_cache: Mutex<MessageCache>,
+    name_matcher: AhoCorasick,
 }
 
 impl BotState {
     fn new(config: Config) -> Self {
         let gemini_token = config.gemini.token.clone();
         let cache_size = config.telegram.cache_size;
+        let names = config.telegram.names.clone();
         Self {
             config,
             gemini: GeminiClient::new(gemini_token),
             msg_cache: Mutex::new(MessageCache::new(cache_size)),
+            name_matcher: AhoCorasick::builder()
+                .ascii_case_insensitive(true)
+                .build(names)
+                .unwrap(),
         }
     }
-}
 
-fn santize_text(s: &str) -> String {
-    markdown::to_html(s).replace("<p>", "").replace("</p>", "")
+    fn should_reply(&self, me: &User, msg: &Message) -> bool {
+        msg.reply_to_message()
+            .and_then(|msg| msg.from.clone())
+            .map(|user| user.eq(me))
+            .unwrap_or(false)
+            || self.name_matcher.is_match(msg.text().unwrap())
+    }
+
+    async fn get_gemini_reply(&self, msg: &Message) -> String {
+        let msg_text = msg.text().unwrap();
+
+        let mut request = GeminiRequest::default();
+
+        request.system_instruction.parts.push(GeminiSystemPart {
+            text: self.config.gemini.personality.clone(),
+        });
+
+        let settings = [
+            GeminiSafetySetting::HarmCategoryHarassment,
+            GeminiSafetySetting::HarmCategoryHateSpeech,
+            GeminiSafetySetting::HarmCategorySexuallyExplicit,
+            GeminiSafetySetting::HarmCategoryDangerousContent,
+            GeminiSafetySetting::HarmCategoryCivicIntegrity,
+        ];
+
+        let settings = settings.map(|setting| (setting)(GeminiSafetyThreshold::BlockNone));
+
+        request.safety_settings.extend(settings);
+
+        let parts = vec![GeminiPart::from(msg_text.to_string())];
+        request
+            .contents
+            .push(GeminiMessage::new(GeminiRole::User, parts));
+
+        let reply_text = match self.gemini.generate(request).await {
+            Ok(content) => {
+                log::debug!("Response content: {content}");
+                content
+            }
+            Err(error) => format!("```\n{error}\n```\nreport this issue to the admins"),
+        };
+        BotState::santize_text(reply_text.as_str())
+    }
+
+    fn santize_text(s: &str) -> String {
+        markdown::to_html(s).replace("<p>", "").replace("</p>", "")
+    }
 }
 
 async fn handle_message(
@@ -48,43 +103,11 @@ async fn handle_message(
         log::debug!("ChatId: {}", msg.chat.id);
         let me = bot.get_me().await?;
         log::debug!("{me:?}");
-        let is_mention = text.contains(me.username());
-        log::debug!("Is mention: {is_mention}");
-        if is_mention {
-            let mut request = GeminiRequest::default();
-
-            request.system_instruction.parts.push(GeminiSystemPart {
-                text: state.config.gemini.personality.clone(),
-            });
-
-            let settings = [
-                GeminiSafetySetting::HarmCategoryHarassment,
-                GeminiSafetySetting::HarmCategoryHateSpeech,
-                GeminiSafetySetting::HarmCategorySexuallyExplicit,
-                GeminiSafetySetting::HarmCategoryDangerousContent,
-                GeminiSafetySetting::HarmCategoryCivicIntegrity,
-            ];
-
-            let settings = settings.map(|setting| (setting)(GeminiSafetyThreshold::BlockNone));
-
-            request.safety_settings.extend(settings);
-
-            let parts = vec![GeminiPart::from(text.to_string())];
-            request
-                .contents
-                .push(GeminiMessage::new(GeminiRole::User, parts));
-
-            let reply_text = match state.gemini.generate(request).await {
-                Ok(content) => {
-                    log::debug!("Response content: {content}");
-                    content
-                }
-                Err(error) => format!("```\n{error}\n```\nreport this issue to the admins"),
-            };
-            let reply_text = santize_text(reply_text.as_str());
-            log::debug!("{}", reply_text);
+        if state.should_reply(&me, &msg) {
+            let reply = state.get_gemini_reply(&msg).await;
+            log::debug!("Reply: {reply}");
             if let Err(error) = bot
-                .send_message(msg.chat.id, reply_text)
+                .send_message(msg.chat.id, reply)
                 .parse_mode(ParseMode::Html)
                 .await
             {
