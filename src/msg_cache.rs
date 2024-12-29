@@ -26,7 +26,10 @@ impl MessageCache {
         messages.push_back(msg);
     }
 
-    pub fn messages(&self, chat_id: ChatId) -> Option<impl Iterator<Item = &Message>> {
-        self.messages.get(&chat_id).map(|vd| vd.iter())
+    pub fn messages(&mut self, chat_id: ChatId) -> impl Iterator<Item = &Message> {
+        self.messages
+            .entry(chat_id)
+            .or_insert(VecDeque::with_capacity(self.size))
+            .iter()
     }
 }

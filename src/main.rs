@@ -1,10 +1,10 @@
 use aho_corasick::AhoCorasick;
 use anyhow::Result;
-use google_gemini;
 use google_gemini::{
     GeminiClient, GeminiMessage, GeminiPart, GeminiRequest, GeminiRole, GeminiSafetySetting,
     GeminiSafetyThreshold, GeminiSystemPart,
 };
+use serde::Serialize;
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -12,7 +12,7 @@ use std::{
 use teloxide::{
     dispatching::UpdateFilterExt,
     prelude::*,
-    types::{ParseMode, User},
+    types::{MessageId, ParseMode, User},
 };
 
 mod config;
@@ -20,6 +20,14 @@ mod msg_cache;
 
 use config::Config;
 use msg_cache::MessageCache;
+
+#[derive(Serialize)]
+struct MessageInfo<'a> {
+    user_name: String,
+    user_id: UserId,
+    message_content: &'a str,
+    message_id: MessageId,
+}
 
 struct BotState {
     config: Config,
@@ -52,9 +60,7 @@ impl BotState {
             || self.name_matcher.is_match(msg.text().unwrap())
     }
 
-    async fn get_gemini_reply(&self, msg: &Message) -> String {
-        let msg_text = msg.text().unwrap();
-
+    async fn get_gemini_reply(&self, me: &User, msg: &Message) -> String {
         let mut request = GeminiRequest::default();
 
         request.system_instruction.parts.push(GeminiSystemPart {
@@ -73,10 +79,11 @@ impl BotState {
 
         request.safety_settings.extend(settings);
 
-        let parts = vec![GeminiPart::from(msg_text.to_string())];
-        request
-            .contents
-            .push(GeminiMessage::new(GeminiRole::User, parts));
+        let message_history = self.build_message_history(me, msg);
+        message_history.iter().cloned().for_each(|(role, content)| {
+            let parts = vec![GeminiPart::from(content)];
+            request.contents.push(GeminiMessage::new(role, parts));
+        });
 
         let reply_text = match self.gemini.generate(request).await {
             Ok(content) => {
@@ -86,6 +93,41 @@ impl BotState {
             Err(error) => format!("```\n{error}\n```\nreport this issue to the admins"),
         };
         BotState::santize_text(reply_text.as_str())
+    }
+
+    fn build_message_history(&self, me: &User, last_msg: &Message) -> Vec<(GeminiRole, String)> {
+        self.msg_cache
+            .lock()
+            .unwrap()
+            .messages(last_msg.chat.id)
+            .chain([last_msg])
+            .filter_map(|msg| {
+                msg.from
+                    .clone()
+                    .map(|user| MessageInfo {
+                        user_name: user.full_name(),
+                        user_id: user.id,
+                        message_content: msg.text().unwrap_or_default(),
+                        message_id: msg.id,
+                    })
+                    .map(|info| {
+                        (
+                            if info.user_id.eq(&me.id) {
+                                GeminiRole::Model
+                            } else {
+                                GeminiRole::User
+                            },
+                            serde_json::to_string(&info).unwrap(),
+                        )
+                    })
+            })
+            .fold(
+                Vec::with_capacity(self.config.telegram.cache_size + 1),
+                |mut v, (role, info)| {
+                    v.push((role, info));
+                    v
+                },
+            )
     }
 
     fn santize_text(s: &str) -> String {
@@ -104,7 +146,7 @@ async fn handle_message(
         let me = bot.get_me().await?;
         log::debug!("{me:?}");
         if state.should_reply(&me, &msg) {
-            let reply = state.get_gemini_reply(&msg).await;
+            let reply = state.get_gemini_reply(&me, &msg).await;
             log::debug!("Reply: {reply}");
             if let Err(error) = bot
                 .send_message(msg.chat.id, reply)
