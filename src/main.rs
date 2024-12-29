@@ -4,7 +4,6 @@ use google_gemini::{
     GeminiClient, GeminiMessage, GeminiPart, GeminiRequest, GeminiRole, GeminiSafetySetting,
     GeminiSafetyThreshold, GeminiSystemPart,
 };
-use serde::Deserialize;
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -35,9 +34,8 @@ impl BotState {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct Response {
-    response: String,
+fn santize_text(s: &str) -> String {
+    markdown::to_html(s).replace("<p>", "").replace("</p>", "")
 }
 
 async fn handle_message(
@@ -59,12 +57,6 @@ async fn handle_message(
                 text: state.config.gemini.personality.clone(),
             });
 
-            request
-                .generation_config
-                .get_or_insert_default()
-                .response_mime_type
-                .push_str("application/json");
-
             let settings = [
                 GeminiSafetySetting::HarmCategoryHarassment,
                 GeminiSafetySetting::HarmCategoryHateSpeech,
@@ -85,34 +77,15 @@ async fn handle_message(
             let reply_text = match state.gemini.generate(request).await {
                 Ok(content) => {
                     log::debug!("Response content: {content}");
-                    match serde_json::from_str::<Response>(&content) {
-                        Ok(content) => content.response,
-                        Err(error) => format!("```\n{error}\n```\nreport this issue to the admins"),
-                    }
+                    content
                 }
                 Err(error) => format!("```\n{error}\n```\nreport this issue to the admins"),
             };
-            let reply_text = reply_text
-                .replace(".", "\\.") // Escape the '.' character
-                .replace("_", "\\_") // Escape the '_' character
-                .replace("*", "\\*") // Escape the '*' character
-                .replace("[", "\\$$") // Escape the '[' character         .replace("]", "\$$") // Escape the ']' character
-                .replace("(", "\\$") // Escape the '(' character
-                .replace(")", "\\$") // Escape the ')' character
-                .replace("~", "\\~") // Escape the '~' character
-                .replace("`", "\\`") // Escape the '`' character
-                .replace(">", "\\>") // Escape the '>' character
-                .replace("#", "\\#") // Escape the '#' character
-                .replace("+", "\\+") // Escape the '+' character
-                .replace("-", "\\-") // Escape the '-' character
-                .replace("=", "\\=") // Escape the '=' character
-                .replace("|", "\\|") // Escape the '|' character
-                .replace("{", "\\{") // Escape the '{' character
-                .replace("}", "\\}") // Escape the '}' character
-                .replace("!", "\\!"); // Escape the '!' character
+            let reply_text = santize_text(reply_text.as_str());
+            log::debug!("{}", reply_text);
             if let Err(error) = bot
                 .send_message(msg.chat.id, reply_text)
-                .parse_mode(ParseMode::MarkdownV2)
+                .parse_mode(ParseMode::Html)
                 .await
             {
                 log::error!("failed to send message: {error}");
