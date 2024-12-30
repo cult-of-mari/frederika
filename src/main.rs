@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use teloxide::{
     dispatching::UpdateFilterExt,
     prelude::*,
-    types::{Me, MessageId, ParseMode},
+    types::{ChatKind, Me, MessageId, ParseMode},
 };
 
 mod cli;
@@ -55,10 +55,12 @@ impl BotState {
     }
 
     fn should_reply(&self, msg: &Message) -> bool {
-        msg.reply_to_message()
-            .and_then(|msg| msg.from.clone())
-            .map(|user| user.eq(&self.me))
-            .unwrap_or(false)
+        matches!(msg.chat.kind, ChatKind::Private(_))
+            || msg
+                .reply_to_message()
+                .and_then(|msg| msg.from.clone())
+                .map(|user| user.eq(&self.me))
+                .unwrap_or(false)
             || self.name_matcher.is_match(msg.text().unwrap())
     }
 
