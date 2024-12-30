@@ -15,15 +15,17 @@ impl MessageCache {
     }
 
     pub fn add(&mut self, msg: Message) {
-        let chat_id = msg.chat.id;
-        let messages = self
-            .messages
-            .entry(chat_id)
-            .or_insert(VecDeque::with_capacity(self.size));
-        if messages.len() == self.size {
-            messages.pop_front();
+        if self.size > 0 {
+            let chat_id = msg.chat.id;
+            let messages = self
+                .messages
+                .entry(chat_id)
+                .or_insert(VecDeque::with_capacity(self.size));
+            if messages.len() == self.size {
+                messages.pop_front();
+            }
+            messages.push_back(msg);
         }
-        messages.push_back(msg);
     }
 
     pub fn messages(&mut self, chat_id: ChatId) -> impl Iterator<Item = &Message> {

@@ -37,10 +37,11 @@ struct BotState {
 }
 
 impl BotState {
-    fn new(config: Config) -> Self {
+    fn new(config: Config, bot_tag: String) -> Self {
         let gemini_token = config.gemini.token.clone();
         let cache_size = config.telegram.cache_size;
-        let names = config.telegram.names.clone();
+        let mut names = config.telegram.names.clone();
+        names.push(bot_tag);
         Self {
             config,
             gemini: GeminiClient::new(gemini_token),
@@ -121,17 +122,14 @@ impl BotState {
                         )
                     })
             })
-            .fold(
-                Vec::with_capacity(self.config.telegram.cache_size + 1),
-                |mut v, (role, info)| {
-                    v.push((role, info));
-                    v
-                },
-            )
+            .collect()
     }
 
     fn santize_text(s: &str) -> String {
-        markdown::to_html(s).replace("<p>", "").replace("</p>", "")
+        markdown::to_html(s)
+            .replace("<p>", "")
+            .replace("</p>", "")
+            .replace("<br />", "")
     }
 }
 
@@ -170,7 +168,8 @@ async fn main() -> Result<()> {
 
     log::info!("Starting the bot...");
     let bot = Bot::new(config.telegram.token.clone());
-    let state = Arc::new(BotState::new(config));
+    let bot_tag = bot.get_me().await?.username().to_string();
+    let state = Arc::new(BotState::new(config, bot_tag));
 
     let handler = Update::filter_message().branch(dptree::endpoint(handle_message));
     Dispatcher::builder(bot, handler)
