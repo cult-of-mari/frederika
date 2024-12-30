@@ -93,9 +93,9 @@ impl BotState {
                 log::debug!("Response content: {content}");
                 content
             }
-            Err(error) => format!("```\n{error}\n```\nreport this issue to the admins"),
+            Err(error) => format!("```\n{error}\n```\nReport this issue to the admins"),
         };
-        BotState::santize_text(reply_text.as_str())
+        BotState::sanitize_text(reply_text.as_str())
     }
 
     fn build_message_history(&self, last_msg: &Message) -> Vec<(GeminiRole, String)> {
@@ -127,11 +127,10 @@ impl BotState {
             .collect()
     }
 
-    fn santize_text(s: &str) -> String {
-        markdown::to_html(s)
-            .replace("<p>", "")
-            .replace("</p>", "")
-            .replace("<br />", "")
+    fn sanitize_text(s: &str) -> String {
+        vec!["<p>", "</p>", "<br />", "<li>", "</li>", "<ol>", "</ol>"]
+            .iter()
+            .fold(markdown::to_html(s), |s, pattern| s.replace(pattern, ""))
     }
 }
 
