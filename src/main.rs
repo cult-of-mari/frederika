@@ -12,7 +12,7 @@ use std::{
 use teloxide::{
     dispatching::UpdateFilterExt,
     prelude::*,
-    types::{MessageId, ParseMode, User},
+    types::{Me, MessageId, ParseMode},
 };
 
 mod config;
@@ -30,6 +30,7 @@ struct MessageInfo<'a> {
 }
 
 struct BotState {
+    me: Me,
     config: Config,
     gemini: GeminiClient,
     msg_cache: Mutex<MessageCache>,
@@ -37,12 +38,13 @@ struct BotState {
 }
 
 impl BotState {
-    fn new(config: Config, bot_tag: String) -> Self {
+    fn new(config: Config, me: Me) -> Self {
         let gemini_token = config.gemini.token.clone();
         let cache_size = config.telegram.cache_size;
         let mut names = config.telegram.names.clone();
-        names.push(bot_tag);
+        names.push(me.username().to_string());
         Self {
+            me,
             config,
             gemini: GeminiClient::new(gemini_token),
             msg_cache: Mutex::new(MessageCache::new(cache_size)),
@@ -53,15 +55,15 @@ impl BotState {
         }
     }
 
-    fn should_reply(&self, me: &User, msg: &Message) -> bool {
+    fn should_reply(&self, msg: &Message) -> bool {
         msg.reply_to_message()
             .and_then(|msg| msg.from.clone())
-            .map(|user| user.eq(me))
+            .map(|user| user.eq(&self.me))
             .unwrap_or(false)
             || self.name_matcher.is_match(msg.text().unwrap())
     }
 
-    async fn get_gemini_reply(&self, me: &User, msg: &Message) -> String {
+    async fn get_gemini_reply(&self, msg: &Message) -> String {
         let mut request = GeminiRequest::default();
 
         request.system_instruction.parts.push(GeminiSystemPart {
@@ -80,7 +82,7 @@ impl BotState {
 
         request.safety_settings.extend(settings);
 
-        let message_history = self.build_message_history(me, msg);
+        let message_history = self.build_message_history(msg);
         message_history.iter().cloned().for_each(|(role, content)| {
             let parts = vec![GeminiPart::from(content)];
             request.contents.push(GeminiMessage::new(role, parts));
@@ -96,7 +98,7 @@ impl BotState {
         BotState::santize_text(reply_text.as_str())
     }
 
-    fn build_message_history(&self, me: &User, last_msg: &Message) -> Vec<(GeminiRole, String)> {
+    fn build_message_history(&self, last_msg: &Message) -> Vec<(GeminiRole, String)> {
         self.msg_cache
             .lock()
             .unwrap()
@@ -113,7 +115,7 @@ impl BotState {
                     })
                     .map(|info| {
                         (
-                            if info.user_id.eq(&me.id) {
+                            if info.user_id.eq(&self.me.id) {
                                 GeminiRole::Model
                             } else {
                                 GeminiRole::User
@@ -141,17 +143,15 @@ async fn handle_message(
     if let Some(text) = msg.text() {
         log::debug!("Recieved message: {text}");
         log::debug!("ChatId: {}", msg.chat.id);
-        let me = bot.get_me().await?;
-        log::debug!("{me:?}");
-        if state.should_reply(&me, &msg) {
-            let reply = state.get_gemini_reply(&me, &msg).await;
+        if state.should_reply(&msg) {
+            let reply = state.get_gemini_reply(&msg).await;
             log::debug!("Reply: {reply}");
             if let Err(error) = bot
                 .send_message(msg.chat.id, reply)
                 .parse_mode(ParseMode::Html)
                 .await
             {
-                log::error!("failed to send message: {error}");
+                log::error!("Failed to send message: {error}");
             }
         }
         let mut msg_cache = state.msg_cache.lock().unwrap();
@@ -168,8 +168,9 @@ async fn main() -> Result<()> {
 
     log::info!("Starting the bot...");
     let bot = Bot::new(config.telegram.token.clone());
-    let bot_tag = bot.get_me().await?.username().to_string();
-    let state = Arc::new(BotState::new(config, bot_tag));
+    let me = bot.get_me().await?;
+    log::debug!("{me:?}");
+    let state = Arc::new(BotState::new(config, me));
 
     let handler = Update::filter_message().branch(dptree::endpoint(handle_message));
     Dispatcher::builder(bot, handler)
