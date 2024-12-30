@@ -5,19 +5,18 @@ use google_gemini::{
     GeminiSafetyThreshold, GeminiSystemPart,
 };
 use serde::Serialize;
-use std::{
-    path::PathBuf,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 use teloxide::{
     dispatching::UpdateFilterExt,
     prelude::*,
     types::{Me, MessageId, ParseMode},
 };
 
+mod cli;
 mod config;
 mod msg_cache;
 
+use cli::parse_cli;
 use config::Config;
 use msg_cache::MessageCache;
 
@@ -128,7 +127,7 @@ impl BotState {
     }
 
     fn sanitize_text(s: &str) -> String {
-        vec!["<p>", "</p>", "<br />", "<li>", "</li>", "<ol>", "</ol>"]
+        ["<p>", "</p>", "<br />", "<li>", "</li>", "<ol>", "</ol>"]
             .iter()
             .fold(markdown::to_html(s), |s, pattern| s.replace(pattern, ""))
     }
@@ -162,8 +161,9 @@ async fn handle_message(
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::init();
-    let config_path = PathBuf::from("./Config.toml");
-    let config = config::load_config(&config_path)?;
+
+    let cli = parse_cli();
+    let config = config::load_config(&cli.config)?;
 
     log::info!("Starting the bot...");
     let bot = Bot::new(config.telegram.token.clone());

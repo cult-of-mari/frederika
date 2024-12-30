@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 aho-corasick = "1.1.3"
 anyhow = "1.0.95"
+clap = { version = "4.5.23", features = ["derive"] }
 env_logger = "0.11.6"
 figment = { version = "0.10.19", features = ["toml", "env"] }
 google-gemini = { git = "https://github.com/cult-of-mari/claide.git", version = "0.0.0" }
