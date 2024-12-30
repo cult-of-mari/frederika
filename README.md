@@ -13,7 +13,7 @@ cargo install --git 'https://github.com/cult-of-mari/frederika.git'
 Copy the [example configuration](https://github.com/cult-of-mari/frederika/blob/main/example_Config.toml)
 and change it as you see fit.
 You would need [Gemini API key](https://ai.google.dev/gemini-api/docs/api-key)
-and [Telegram Bot](https://core.telegram.org/bots/tutorial#obtain-your-bot-token) token to run it.
+and [Telegram Bot token](https://core.telegram.org/bots/tutorial#obtain-your-bot-token) to run it.
 
 ```toml
 [telegram]
