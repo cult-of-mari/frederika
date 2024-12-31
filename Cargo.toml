@@ -9,6 +9,7 @@ anyhow = "1.0.95"
 clap = { version = "4.5.23", features = ["derive"] }
 env_logger = "0.11.6"
 figment = { version = "0.10.19", features = ["toml", "env"] }
+futures-util = "0.3.31"
 google-gemini = { git = "https://github.com/cult-of-mari/claide.git", version = "0.0.0" }
 log = "0.4.22"
 markdown = "1.0.0-alpha.21"

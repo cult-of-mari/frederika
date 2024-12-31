@@ -537,6 +537,7 @@ dependencies = [
  "clap",
  "env_logger",
  "figment",
+ "futures-util",
  "google-gemini",
  "log",
  "markdown",
