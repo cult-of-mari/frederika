@@ -6,15 +6,13 @@ use google_gemini::{
     GeminiSafetyThreshold, GeminiSystemPart,
 };
 use serde::Serialize;
-use std::{
-    borrow::Borrow,
-    sync::{Arc, Mutex},
-};
+use std::sync::Arc;
 use teloxide::{
     dispatching::UpdateFilterExt,
     prelude::*,
     types::{ChatKind, Me, MediaKind, MessageId, MessageKind, ParseMode},
 };
+use tokio::sync::Mutex;
 
 mod cli;
 mod config;
@@ -103,11 +101,12 @@ impl BotState {
     }
 
     async fn build_message_history(&self, bot: &Bot, last_msg: &Message) -> Vec<GeminiMessage> {
-        let mut msg_cache = self.msg_cache.lock().unwrap();
+        let mut msg_cache = self.msg_cache.lock().await;
         let futures = msg_cache
             .messages(last_msg.chat.id)
             .chain([last_msg])
-            .map(|msg| self.message_into_gemini_message(bot, msg));
+            .map(|msg| self.message_into_gemini_message(bot, msg))
+            .collect::<Vec<_>>();
         futures_util::stream::iter(futures)
             .buffered(3)
             .collect::<Vec<_>>()
@@ -128,10 +127,10 @@ impl BotState {
             .as_ref()
             .map(|u| (u.full_name(), u.id))
             .ok_or_else(|| anyhow!("Message has no author"))?;
-        let MessageKind::Common(msg) = msg.kind.borrow() else {
+        let MessageKind::Common(msg) = msg.kind.clone() else {
             return Err(anyhow!("Unsupported message type (Not Common)"));
         };
-        let parts = match msg.media_kind.borrow() {
+        let parts = match msg.media_kind.clone() {
             MediaKind::Text(text) => {
                 let info = MessageInfo {
                     user_name,
@@ -193,7 +192,7 @@ async fn handle_message(
             log::error!("Failed to send message: {error}");
         }
     }
-    let mut msg_cache = state.msg_cache.lock().unwrap();
+    let mut msg_cache = state.msg_cache.lock().await;
     msg_cache.add(msg);
     Ok(())
 }
