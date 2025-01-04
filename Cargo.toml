@@ -9,10 +9,12 @@ anyhow = "1.0.95"
 clap = { version = "4.5.23", features = ["derive"] }
 env_logger = "0.11.6"
 figment = { version = "0.10.19", features = ["toml", "env"] }
+futures = "0.3.31"
 futures-util = "0.3.31"
-google-gemini = { git = "https://github.com/cult-of-mari/claide.git", version = "0.0.0" }
+google-gemini = { git = "https://github.com/cult-of-mari/claide.git", version = "0.0.0", rev="3ef6aa4900b2bcc5d126416aa142c64f2d905b95" }
 log = "0.4.22"
 markdown = "1.0.0-alpha.21"
+mime_guess = "2.0.5"
 reqwest = { version = "0.12.11", features = ["socks"] }
 serde = { version = "1.0.216", features = ["derive"] }
 serde_json = "1.0.134"

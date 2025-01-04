@@ -1,23 +1,26 @@
 use aho_corasick::AhoCorasick;
 use anyhow::{anyhow, Result};
-use futures_util::StreamExt;
+use futures_util::{StreamExt, TryStreamExt};
 use google_gemini::{
-    GeminiClient, GeminiMessage, GeminiPart, GeminiRequest, GeminiRole, GeminiSafetySetting,
-    GeminiSafetyThreshold, GeminiSystemPart,
+    GeminiClient, GeminiMessage, GeminiRequest, GeminiRole, GeminiSafetySetting,
+    GeminiSafetyThreshold, GeminiSystemPart, Part, TextPart,
 };
 use serde::Serialize;
-use std::sync::Arc;
+use std::{borrow::Borrow, sync::Arc};
 use teloxide::{
     dispatching::UpdateFilterExt,
+    net::Download,
     prelude::*,
     types::{ChatKind, Me, MediaKind, MessageId, MessageKind, ParseMode},
 };
 use tokio::sync::Mutex;
 
+mod attachment;
 mod cli;
 mod config;
 mod msg_cache;
 
+use attachment::GeminiAttachment;
 use cli::parse_cli;
 use config::Config;
 use msg_cache::MessageCache;
@@ -70,9 +73,13 @@ impl BotState {
     async fn get_gemini_reply(&self, bot: &Bot, msg: &Message) -> String {
         let mut request = GeminiRequest::default();
 
-        request.system_instruction.parts.push(GeminiSystemPart {
-            text: self.config.gemini.personality.clone(),
-        });
+        request
+            .system_instruction
+            .get_or_insert_default()
+            .parts
+            .push(GeminiSystemPart {
+                text: self.config.gemini.personality.clone(),
+            });
 
         let settings = [
             GeminiSafetySetting::HarmCategoryHarassment,
@@ -90,14 +97,22 @@ impl BotState {
             .await
             .into_iter()
             .for_each(|msg| request.contents.push(msg));
-        let reply_text = match self.gemini.generate(request).await {
-            Ok(content) => {
-                log::debug!("Response content: {content}");
-                content
+        let response = self.gemini.generate(request).await;
+        let text = match response.as_deref() {
+            Ok(
+                [Part::Text(TextPart {
+                    text,
+                    thought: false,
+                })],
+            ) => text.to_string(),
+            Ok(_parts) => {
+                format!("```\nissue\n```\nReport this issue to the admins")
             }
-            Err(error) => format!("```\n{error}\n```\nReport this issue to the admins"),
+            Err(error) => {
+                format!("```\n{error}\n```\nReport this issue to the admins")
+            }
         };
-        BotState::sanitize_text(reply_text.as_str())
+        BotState::sanitize_text(&text)
     }
 
     async fn build_message_history(&self, bot: &Bot, last_msg: &Message) -> Vec<GeminiMessage> {
@@ -116,18 +131,14 @@ impl BotState {
             .collect()
     }
 
-    async fn message_into_gemini_message(
-        &self,
-        _bot: &Bot,
-        msg: &Message,
-    ) -> Result<GeminiMessage> {
+    async fn message_into_gemini_message(&self, bot: &Bot, msg: &Message) -> Result<GeminiMessage> {
         let message_id = msg.id;
         let (user_name, user_id) = msg
             .from
             .as_ref()
             .map(|u| (u.full_name(), u.id))
             .ok_or_else(|| anyhow!("Message has no author"))?;
-        let MessageKind::Common(msg) = msg.kind.clone() else {
+        let MessageKind::Common(msg) = msg.kind.borrow() else {
             return Err(anyhow!("Unsupported message type (Not Common)"));
         };
         let parts = match msg.media_kind.clone() {
@@ -138,7 +149,47 @@ impl BotState {
                     message_content: &text.text,
                     message_id,
                 };
-                vec![GeminiPart::from(serde_json::to_string(&info)?)]
+                vec![Part::from(serde_json::to_string(&info)?)]
+            }
+            MediaKind::Photo(photo) => {
+                let file_meta = photo
+                    .photo
+                    .iter()
+                    .max_by_key(|p| p.file.size)
+                    .unwrap()
+                    .file
+                    .borrow();
+                let file = bot.get_file(file_meta.id.as_str()).await?;
+                let mime = mime_guess::from_path(file.path.clone()).first().unwrap();
+                let mime_str = mime.to_string();
+                let bytes = bot
+                    .download_file_stream(&file.path)
+                    .try_fold(Vec::new(), |mut v, bytes| {
+                        v.extend(bytes);
+                        futures::future::ready(Ok(v))
+                    })
+                    .await?;
+                let content_length = bytes.len() as u32;
+                let url = self
+                    .gemini
+                    .create_file(&file.path, content_length, mime_str.as_str())
+                    .await?;
+                let url = self.gemini.upload_file(url, content_length, bytes).await?;
+                let text = photo.caption.unwrap_or_default();
+                let info = MessageInfo {
+                    user_name,
+                    user_id,
+                    message_content: text.as_str(),
+                    message_id,
+                };
+                let attachment = GeminiAttachment {
+                    uri: url,
+                    content_type: mime_str.into(),
+                };
+                vec![
+                    Part::from(serde_json::to_string(&info)?),
+                    Part::from(attachment),
+                ]
             }
             _ => return Err(anyhow!("Unsupported media type (Not Text)")),
         };
@@ -147,22 +198,6 @@ impl BotState {
         } else {
             GeminiRole::User
         };
-        //         MediaKind::Photo(photo) => {
-        //             let file_id = photo
-        //                 .photo
-        //                 .iter()
-        //                 .max_by_key(|p| p.file.size)
-        //                 .unwrap()
-        //                 .file
-        //                 .id
-        //                 .clone();
-        //             let file_url = bot
-        //                 .get_file(file_id.as_str())
-        //                 .await
-        //                 .inspect_err(|e| log::debug!("{e}"))
-        //                 .map(|url| (url.path));
-        //             todo!()
-        //         }
 
         Ok(GeminiMessage::new(role, parts))
     }
