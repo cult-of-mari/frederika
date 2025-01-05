@@ -1,6 +1,6 @@
 use aho_corasick::AhoCorasick;
-use anyhow::{anyhow, Result};
-use futures_util::{StreamExt, TryStreamExt};
+use anyhow::Result;
+use futures_util::StreamExt;
 use google_gemini::{
     GeminiClient, GeminiMessage, GeminiRequest, GeminiRole, GeminiSafetySetting,
     GeminiSafetyThreshold, GeminiSystemPart, Part, TextPart,
@@ -9,7 +9,6 @@ use serde::Serialize;
 use std::{borrow::Borrow, sync::Arc};
 use teloxide::{
     dispatching::UpdateFilterExt,
-    net::Download,
     prelude::*,
     types::{ChatKind, Me, MediaKind, MessageId, MessageKind, ParseMode},
 };
@@ -36,6 +35,7 @@ struct MessageInfo<'a> {
 struct BotState {
     me: Me,
     config: Config,
+    http_client: reqwest::Client,
     gemini: GeminiClient,
     msg_cache: Mutex<MessageCache>,
     name_matcher: AhoCorasick,
@@ -50,6 +50,7 @@ impl BotState {
         Self {
             me,
             config,
+            http_client: reqwest::Client::new(),
             gemini: GeminiClient::new(gemini_token),
             msg_cache: Mutex::new(MessageCache::new(cache_size)),
             name_matcher: AhoCorasick::builder()
@@ -67,7 +68,10 @@ impl BotState {
                     .and_then(|msg| msg.from.as_ref())
                     .map(|user| user.eq(&self.me))
                     .unwrap_or(false)
-                || self.name_matcher.is_match(msg.text().unwrap_or_default()))
+                || self.name_matcher.is_match(msg.text().unwrap_or_default())
+                || self
+                    .name_matcher
+                    .is_match(msg.caption().unwrap_or_default()))
     }
 
     async fn get_gemini_reply(&self, bot: &Bot, msg: &Message) -> String {
@@ -105,9 +109,7 @@ impl BotState {
                     thought: false,
                 })],
             ) => text.to_string(),
-            Ok(_parts) => {
-                format!("```\nissue\n```\nReport this issue to the admins")
-            }
+            Ok(_parts) => "```\nissue\n```\nReport this issue to the admins".to_string(),
             Err(error) => {
                 format!("```\n{error}\n```\nReport this issue to the admins")
             }
@@ -133,24 +135,23 @@ impl BotState {
 
     async fn message_into_gemini_message(&self, bot: &Bot, msg: &Message) -> Result<GeminiMessage> {
         let message_id = msg.id;
+        let message_content = msg.text().unwrap_or(msg.caption().unwrap_or_default());
         let (user_name, user_id) = msg
             .from
             .as_ref()
             .map(|u| (u.full_name(), u.id))
-            .ok_or_else(|| anyhow!("Message has no author"))?;
+            .ok_or_else(|| anyhow::anyhow!("Message has no author"))?;
         let MessageKind::Common(msg) = msg.kind.borrow() else {
-            return Err(anyhow!("Unsupported message type (Not Common)"));
+            return Err(anyhow::anyhow!("Unsupported message type (Not Common)"));
         };
-        let parts = match msg.media_kind.clone() {
-            MediaKind::Text(text) => {
-                let info = MessageInfo {
-                    user_name,
-                    user_id,
-                    message_content: &text.text,
-                    message_id,
-                };
-                vec![Part::from(serde_json::to_string(&info)?)]
-            }
+        let info = MessageInfo {
+            user_name,
+            user_id,
+            message_content,
+            message_id,
+        };
+        let mut parts = vec![Part::from(serde_json::to_string(&info)?)];
+        let attachment = match msg.media_kind.clone() {
             MediaKind::Photo(photo) => {
                 let file_meta = photo
                     .photo
@@ -160,46 +161,62 @@ impl BotState {
                     .file
                     .borrow();
                 let file = bot.get_file(file_meta.id.as_str()).await?;
-                let mime = mime_guess::from_path(file.path.clone()).first().unwrap();
-                let mime_str = mime.to_string();
-                let bytes = bot
-                    .download_file_stream(&file.path)
-                    .try_fold(Vec::new(), |mut v, bytes| {
-                        v.extend(bytes);
-                        futures::future::ready(Ok(v))
+                let url = format!(
+                    "https://api.telegram.org/file/{}/{}",
+                    bot.token(),
+                    file.path
+                );
+                self.url_to_gemini_attachment(url, file.path)
+                    .await
+                    .inspect_err(|e| {
+                        log::debug!("Couldn't submit an attachment: {e}");
                     })
-                    .await?;
-                let content_length = bytes.len() as u32;
-                let url = self
-                    .gemini
-                    .create_file(&file.path, content_length, mime_str.as_str())
-                    .await?;
-                let url = self.gemini.upload_file(url, content_length, bytes).await?;
-                let text = photo.caption.unwrap_or_default();
-                let info = MessageInfo {
-                    user_name,
-                    user_id,
-                    message_content: text.as_str(),
-                    message_id,
-                };
-                let attachment = GeminiAttachment {
-                    uri: url,
-                    content_type: mime_str.into(),
-                };
-                vec![
-                    Part::from(serde_json::to_string(&info)?),
-                    Part::from(attachment),
-                ]
+                    .ok()
             }
-            _ => return Err(anyhow!("Unsupported media type (Not Text)")),
+            media_kind => {
+                log::debug!("Unsupported media kind {media_kind:?}");
+                None
+            }
         };
+        if let Some(attachment) = attachment {
+            parts.push(Part::from(attachment));
+        }
         let role = if user_id.eq(&self.me.id) {
             GeminiRole::Model
         } else {
             GeminiRole::User
         };
-
         Ok(GeminiMessage::new(role, parts))
+    }
+
+    async fn url_to_gemini_attachment(
+        &self,
+        url: String,
+        file_name: String,
+    ) -> Result<GeminiAttachment> {
+        let mime = mime_guess::from_path(url.clone()).first().unwrap();
+        let mime_str = mime.to_string();
+        let bytes = self
+            .http_client
+            .get(url.clone())
+            .send()
+            .await?
+            .error_for_status()?
+            .bytes()
+            .await?;
+        let content_length = bytes.len() as u32;
+        let url = self
+            .gemini
+            .create_file(&file_name, content_length, mime_str.as_str())
+            .await?;
+        let url = self
+            .gemini
+            .upload_file(url, content_length, bytes.into())
+            .await?;
+        Ok(GeminiAttachment {
+            uri: url,
+            content_type: mime_str.into(),
+        })
     }
 
     fn sanitize_text(s: &str) -> String {
