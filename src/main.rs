@@ -162,9 +162,8 @@ impl BotState {
                     .borrow();
                 let file = bot.get_file(file_meta.id.as_str()).await?;
                 let url = format!(
-                    "https://api.telegram.org/file/{}/{}",
-                    bot.token(),
-                    file.path
+                    "https://api.telegram.org/file/bot{}/{}",
+                    self.config.telegram.token, file.path
                 );
                 self.url_to_gemini_attachment(url, file.path)
                     .await
