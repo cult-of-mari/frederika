@@ -10,7 +10,7 @@ use std::{borrow::Borrow, sync::Arc};
 use teloxide::{
     dispatching::UpdateFilterExt,
     prelude::*,
-    types::{ChatKind, Me, MediaKind, MessageId, MessageKind, ParseMode},
+    types::{ChatKind, Me, MessageId, MessageKind, ParseMode},
 };
 use tokio::sync::Mutex;
 
@@ -18,8 +18,8 @@ mod attachment;
 mod cli;
 mod config;
 mod msg_cache;
+mod util;
 
-use attachment::GeminiAttachment;
 use cli::parse_cli;
 use config::Config;
 use msg_cache::MessageCache;
@@ -114,7 +114,7 @@ impl BotState {
                 format!("```\n{error}\n```\nReport this issue to the admins")
             }
         };
-        BotState::sanitize_text(&text)
+        util::sanitize_text(&text)
     }
 
     async fn build_message_history(&self, bot: &Bot, last_msg: &Message) -> Vec<GeminiMessage> {
@@ -151,32 +151,15 @@ impl BotState {
             message_id,
         };
         let mut parts = vec![Part::from(serde_json::to_string(&info)?)];
-        let attachment = match msg.media_kind.clone() {
-            MediaKind::Photo(photo) => {
-                let file_meta = photo
-                    .photo
-                    .iter()
-                    .max_by_key(|p| p.file.size)
-                    .unwrap()
-                    .file
-                    .borrow();
-                let file = bot.get_file(file_meta.id.as_str()).await?;
-                let url = format!(
-                    "https://api.telegram.org/file/bot{}/{}",
-                    self.config.telegram.token, file.path
-                );
-                self.url_to_gemini_attachment(url, file.path)
-                    .await
-                    .inspect_err(|e| {
-                        log::debug!("Couldn't submit an attachment: {e}");
-                    })
-                    .ok()
-            }
-            media_kind => {
-                log::debug!("Unsupported media kind {media_kind:?}");
-                None
-            }
-        };
+        let attachment = util::media_kind_to_gemini_attachment(
+            bot,
+            &self.http_client,
+            &self.gemini,
+            &msg.media_kind,
+        )
+        .await
+        .inspect_err(|e| log::debug!("Failed to create GeminiAttachment: {e}"))
+        .ok();
         if let Some(attachment) = attachment {
             parts.push(Part::from(attachment));
         }
@@ -186,42 +169,6 @@ impl BotState {
             GeminiRole::User
         };
         Ok(GeminiMessage::new(role, parts))
-    }
-
-    async fn url_to_gemini_attachment(
-        &self,
-        url: String,
-        file_name: String,
-    ) -> Result<GeminiAttachment> {
-        let mime = mime_guess::from_path(url.clone()).first().unwrap();
-        let mime_str = mime.to_string();
-        let bytes = self
-            .http_client
-            .get(url.clone())
-            .send()
-            .await?
-            .error_for_status()?
-            .bytes()
-            .await?;
-        let content_length = bytes.len() as u32;
-        let url = self
-            .gemini
-            .create_file(&file_name, content_length, mime_str.as_str())
-            .await?;
-        let url = self
-            .gemini
-            .upload_file(url, content_length, bytes.into())
-            .await?;
-        Ok(GeminiAttachment {
-            uri: url,
-            content_type: mime_str.into(),
-        })
-    }
-
-    fn sanitize_text(s: &str) -> String {
-        ["<p>", "</p>", "<br />", "<li>", "</li>", "<ol>", "</ol>"]
-            .iter()
-            .fold(markdown::to_html(s), |s, pattern| s.replace(pattern, ""))
     }
 }
 
