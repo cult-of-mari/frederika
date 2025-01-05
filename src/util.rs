@@ -24,7 +24,13 @@ pub fn media_kind_to_file_meta(media_kind: &MediaKind) -> Result<FileMeta> {
             .unwrap()
             .file
             .clone()),
+        MediaKind::Sticker(sticker) => Ok(sticker.sticker.file.clone()),
+        MediaKind::Video(video) => Ok(video.video.file.clone()),
+        MediaKind::VideoNote(video_note) => Ok(video_note.video_note.file.clone()),
         MediaKind::Animation(animation) => Ok(animation.animation.file.clone()),
+        MediaKind::Audio(audio) => Ok(audio.audio.file.clone()),
+        MediaKind::Voice(voice) => Ok(voice.voice.file.clone()),
+        MediaKind::Document(document) => Ok(document.document.file.clone()),
         media_kind => Err(anyhow!("Unsupported media kind {media_kind:?}")),
     }
 }
@@ -50,7 +56,9 @@ pub async fn url_to_gemini_attachment(
     gemini: &GeminiClient,
     url: String,
 ) -> Result<GeminiAttachment> {
-    let mime = mime_guess::from_path(url.clone()).first().unwrap();
+    let mime = mime_guess::from_path(url.clone())
+        .first()
+        .ok_or(anyhow!("Couldn't guess the mime type: {url}"))?;
     let mime_str = mime.to_string();
     let file_name = Path::new(&url)
         .file_name()
